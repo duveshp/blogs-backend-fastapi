@@ -1,5 +1,7 @@
 from typing import Optional
 from fastapi import FastAPI
+from pydantic import BaseModel
+import uvicorn
 
 app = FastAPI()
 
@@ -36,3 +38,22 @@ def getQueryParams(limit = 10, published: bool = True, sort: Optional[str]= None
 @app.get('/blog/{id}') 
 def getPathParams(id:int):  #add :int for data type strict validation
     return {'data':id}
+
+
+#POST -Models based request body
+
+class Blogs(BaseModel):
+    title: str
+    body: str
+    published_at: Optional[bool]
+
+
+@app.post('/blog')
+def createBlog(request:Blogs):
+    return request
+
+
+#PortId
+#run python main.py to run on this 9090 port
+# if __name__ == "__main__":
+#     uvicorn.run(app,host="127.0.0.1",port=9090)  
