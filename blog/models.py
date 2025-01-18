@@ -17,3 +17,7 @@ class Blog2(SQLModel, table=True):
     body :str
     published_at:Optional[bool] = False
 
+class FileRecord(SQLModel, table=True):
+    id :int =  Field(primary_key=True)
+    filename :str
+    filepath :str
