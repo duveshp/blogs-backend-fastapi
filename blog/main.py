@@ -64,18 +64,36 @@
 # #     return blog
 
 
-from fastapi import FastAPI,HTTPException
-from blog.mlmodels.model import detect_anomaly 
+import pandas as pd
+import joblib
+from fastapi import FastAPI, File, UploadFile
+from blog.mlmodels.model import detect_anomaly  # Import anomaly detection function
 
 app = FastAPI()
 
+# Define the same columns used in training
+COLUMNS_TO_KEEP = [
+    'T_Q019_Q026_1', 'T_Q019_Q026_2', 'T_Q019_Q026_3',
+    'T_Q019_Q026_4', 'T_Q019_Q026_5', 'T_Q019_Q026_6',
+    'T_Q019_Q026_7', 'T_Q019_Q026_8'
+]
+
 @app.post("/predict")
-async def predict():
-    # Convert the incoming data to a list
-    #feature_list = [features.feature1, features.feature2, features.feature3]
-    
-    # Get the prediction from the model
-    result = detect_anomaly()
-    
-    return result
+async def predict(file: UploadFile = File(...)):
+    # Read the uploaded CSV file
+     # Read the uploaded CSV file
+    df = pd.read_csv(file.file, encoding="latin1")
+
+    # Ensure required columns exist (drop extra columns, fill missing ones)
+    df = df[COLUMNS_TO_KEEP]
+
+    # Perform anomaly detection for the entire dataset (batch processing)
+    results = detect_anomaly(df)
+    print(results)
+    # Add results back to the DataFrame
+    #df["anomaly_detected"] = [res["anomaly_detected"] for res in results]
+
+    # Convert result to JSON
+    #return df.to_dict(orient="records")
+    return "DONE Processing"
 
