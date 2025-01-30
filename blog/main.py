@@ -1,99 +1,87 @@
-# from fastapi import Depends, FastAPI,UploadFile,File
-
-# from .dependencies import get_query_token, get_token_header
-# from .routers import items, users
-# import shutil
-# import os
-# from .database import engine, SessionLocal
-# from sqlmodel import Session,SQLModel
-# from .models import FileRecord
-
-
-# app = FastAPI()
-
-# SQLModel.metadata.create_all(engine)
-
-# app.include_router(users.router)
-# app.include_router(items.router)
-
-
-# UPLOAD_DIR = "uploaded_files"
-# os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# @app.get("/")
-# async def root():
-#     return {"message": "Hello Bigger Applications!"}
-
-# @app.post("/upload/")
-# async def upload_file(file: UploadFile = File(...), db: SessionLocal = SessionLocal()):
-#     file_location = os.path.abspath(os.path.join(UPLOAD_DIR, file.filename))
-    
-#     with open(file_location, "wb") as buffer:
-#         shutil.copyfileobj(file.file, buffer)
-    
-#     file_record = FileRecord(filename=file.filename, filepath=file_location)
-#     db.add(file_record)
-#     db.commit()
-#     db.refresh(file_record)
-    
-#     return {"filename": file.filename, "filepath": file_location}
-
-# # from fastapi import FastAPI,HTTPException
-# # from . import schemas,models
-# # from .database import engine, SessionLocal
-# # from sqlmodel import SQLModel
-
-# # # models.Base.metadata.create_all(bind=engine)
-# # SQLModel.metadata.create_all(engine)
-
-# # app = FastAPI()
-
-# # @app.post('/blog')
-# # def createBlog(request:schemas.OpsBlogs, session:SessionLocal) -> models.Blog2:
-# #     new_blog = models.Blog2(title=request.title,body=request.body,published_at=request.published_at)
-# #     session.add(new_blog)
-# #     session.commit()
-# #     session.refresh(new_blog)
-# #     return new_blog
-
-# # @app.get("/blog/{blog_id}")
-# # def read_hero(hero_id: int, session: SessionLocal) -> models.Blog2:
-# #     blog = session.get(models.Blog2, hero_id)
-# #     if not blog:
-# #         raise HTTPException(status_code=404, detail="Hero not found")
-# #     return blog
-
-
+from fastapi import FastAPI, UploadFile, File, HTTPException
 import pandas as pd
+import numpy as np
 import joblib
-from fastapi import FastAPI, File, UploadFile
-from blog.mlmodels.model import detect_anomaly  # Import anomaly detection function
+import random
+from io import BytesIO
+import os
 
 app = FastAPI()
 
-# Define the same columns used in training
-COLUMNS_TO_KEEP = [
-    'T_Q019_Q026_1', 'T_Q019_Q026_2', 'T_Q019_Q026_3',
-    'T_Q019_Q026_4', 'T_Q019_Q026_5', 'T_Q019_Q026_6',
-    'T_Q019_Q026_7', 'T_Q019_Q026_8'
-]
+# Load the trained model and scaler
+try:
+    model_path = os.path.join(os.path.dirname(__file__), 'isolation_forest.pkl')
+    model, scaler = joblib.load(model_path)
+except FileNotFoundError:
+    raise Exception("Model file not found! Train and save the model first.")
 
-@app.post("/predict")
+@app.post("/predict/")
 async def predict(file: UploadFile = File(...)):
-    # Read the uploaded CSV file
-     # Read the uploaded CSV file
-    df = pd.read_csv(file.file, encoding="latin1")
+    """
+    Upload an Excel or CSV file for anomaly detection.
+    """
 
-    # Ensure required columns exist (drop extra columns, fill missing ones)
-    df = df[COLUMNS_TO_KEEP]
+    # Read the file contents
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty!")
 
-    # Perform anomaly detection for the entire dataset (batch processing)
-    results = detect_anomaly(df)
-    print(results)
-    # Add results back to the DataFrame
-    #df["anomaly_detected"] = [res["anomaly_detected"] for res in results]
+    file.file.seek(0)  # Reset file pointer
 
-    # Convert result to JSON
-    #return df.to_dict(orient="records")
-    return "DONE Processing"
+    # Load data (CSV or Excel)
+    try:
+        if file.filename.endswith(".csv"):
+            try:
+                df = pd.read_csv(BytesIO(contents), encoding="utf-8")
+            except UnicodeDecodeError:
+                df = pd.read_csv(BytesIO(contents), encoding="latin1")
+        elif file.filename.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(BytesIO(contents))
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file format! Upload CSV or Excel.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}")
 
+    if df.empty:
+        raise HTTPException(status_code=400, detail="File contains no data!")
+
+    # ✅ Handle categorical values ('DK' → Random int)
+    for column in df.columns:
+        if df[column].dtype == 'object':
+            mask = df[column] == 'DK'
+            df.loc[mask, column] = [random.randint(1, 5) for _ in range(mask.sum())]
+
+    # ✅ Attempt to convert columns to numeric, but handle exceptions for non-numeric columns
+    for column in df.columns:
+        try:
+            # If a column can't be converted to numeric, it will remain as an object or datetime
+            df[column] = pd.to_numeric(df[column], errors='coerce')  # Use 'coerce' to replace errors with NaN
+        except (ValueError, TypeError):
+            pass
+
+    # ✅ Drop any columns with non-numeric data (like Date or other text columns)
+    df = df.select_dtypes(include=[np.number])
+
+    # ✅ Fill missing values
+    df.fillna(df.mean(), inplace=True)
+
+    # ✅ Scale data
+    try:
+        scaled_data = scaler.transform(df)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Error during scaling: {str(e)}")
+
+    # ✅ Predict anomalies
+    anomaly_labels = model.predict(scaled_data)
+    anomaly_labels = np.where(anomaly_labels == 1, 0, 1)  # Convert to binary
+
+    # ✅ Compute metrics
+    total_samples = len(df)
+    anomaly_count = np.sum(anomaly_labels)
+    anomaly_percentage = round((anomaly_count / total_samples) * 100, 2)
+
+    return {
+        "total_samples": total_samples,
+        "anomaly_count": int(anomaly_count),
+        "anomaly_percentage": anomaly_percentage,
+    }
